@@ -1398,31 +1398,38 @@ async def dice(interaction: discord.Interaction, guess: discord.app_commands.Cho
     
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="tos_coin", description="🧩 Special ToS Coin Flip - Bet 100 Diamonds to win 100 more!")
-@discord.app_commands.describe(choice="Choose Head or Tail")
+@bot.tree.command(name="tos_coin", description="🧩 Special ToS Coin Flip - Bet minimum 100 Diamonds to win or lose!")
+@discord.app_commands.describe(
+    choice="Choose Head or Tail",
+    bet="Amount to bet (minimum 100 Diamonds)"
+)
 @discord.app_commands.choices(choice=[
     discord.app_commands.Choice(name="Head", value="head"),
     discord.app_commands.Choice(name="Tail", value="tail")
 ])
-async def tos_coin(interaction: discord.Interaction, choice: discord.app_commands.Choice[str]):
-    # Check if user has minimum bet amount
-    user_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
-    bet_amount = 100
+async def tos_coin(interaction: discord.Interaction, choice: discord.app_commands.Choice[str], bet: int = 100):
+    # Check minimum bet
+    if bet < 100:
+        await interaction.response.send_message("❌ Minimum bet is 100 Diamonds!", ephemeral=True)
+        return
     
-    if user_balance < bet_amount:
+    # Check if user has enough diamonds
+    user_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    
+    if user_balance < bet:
         embed = discord.Embed(
             title="❌ Insufficient Diamonds",
-            description=f"You need at least {bet_amount:,} Diamonds to play ToS Coin Flip!",
+            description=f"You need at least {bet:,} Diamonds to place this bet!",
             color=0xe74c3c
         )
         embed.add_field(name="💎 Your Balance", value=f"```{user_balance:,}```", inline=True)
-        embed.add_field(name="💎 Required", value=f"```{bet_amount:,}```", inline=True)
+        embed.add_field(name="💎 Required", value=f"```{bet:,}```", inline=True)
         embed.add_field(name="💡 Tip", value="```Use /claim_daily to earn more!```", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
     # Deduct bet amount first
-    await remove_diamonds(interaction.user.id, interaction.guild.id, bet_amount)
+    await remove_diamonds(interaction.user.id, interaction.guild.id, bet)
     
     result = random.choice(["head", "tail"])
     won = choice.value == result
@@ -1435,27 +1442,28 @@ async def tos_coin(interaction: discord.Interaction, choice: discord.app_command
     
     embed.add_field(name="🎯 Your Pick", value=f"```{choice.name}```", inline=True)
     embed.add_field(name="🪙 ToS Coin Result", value=f"```{result.title()}```", inline=True)
-    embed.add_field(name="💰 Bet Amount", value=f"```{bet_amount:,} Diamonds```", inline=True)
+    embed.add_field(name="💰 Bet Amount", value=f"```{bet:,} Diamonds```", inline=True)
     
     if won:
-        # Give back bet + winnings (total 200 diamonds)
-        winnings = bet_amount + 100  # 100 bet back + 100 win
+        # Give back bet + winnings (double the bet)
+        winnings = bet * 2  # Get back bet + win same amount
         await add_diamonds(interaction.user.id, interaction.guild.id, winnings)
         embed.add_field(name="🎉 Result", value="```🎉 WINNER! 🎉```", inline=False)
         embed.add_field(name="💎 You Won", value=f"```+{winnings:,} Diamonds```", inline=True)
-        embed.add_field(name="📊 Net Gain", value="```+100 Diamonds```", inline=True)
+        embed.add_field(name="📊 Net Gain", value=f"```+{bet:,} Diamonds```", inline=True)
         
         new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
         embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
     else:
+        # Already deducted, so just show the loss
         embed.add_field(name="😔 Result", value="```❌ You Lost!```", inline=False)
-        embed.add_field(name="💎 Lost", value=f"```-{bet_amount:,} Diamonds```", inline=True)
-        embed.add_field(name="📊 Net Loss", value=f"```-{bet_amount:,} Diamonds```", inline=True)
+        embed.add_field(name="💎 Lost", value=f"```-{bet:,} Diamonds```", inline=True)
+        embed.add_field(name="📊 Net Loss", value=f"```-{bet:,} Diamonds```", inline=True)
         
         new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
         embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
     
-    embed.set_footer(text="🧩 Special ToS Edition | High Risk, High Reward!")
+    embed.set_footer(text="🧩 Special ToS Edition | Win = Double your bet, Lose = Lose your bet!")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="test_dm", description="📩 Test if the bot can send you Direct Messages")
@@ -1988,6 +1996,371 @@ async def auto_setup_ticket_panel():
             embed2.add_field(
                 name="🚨 Report System",
                 value="```Report rule violations```",
+
+
+# CHANNEL-SPECIFIC SETUP COMMANDS
+@bot.tree.command(name="setup_convert_channel", description="Setup conversion commands panel for a channel")
+@discord.app_commands.describe(channel="Channel to setup conversion panel")
+async def setup_convert_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="💰 Diamond Conversion Center",
+        description="""
+┌─────────────────────────────────────┐
+│   **🔹 Convert Your Diamonds**     │
+│                                     │
+│ 💱 **Conversion Rate:**             │
+│ 100 Diamonds = ₹1 (rounded down)   │
+│                                     │
+│ 🎁 **Available Conversions:**      │
+│ • `/convert_points` - Diamonds → ₹ │
+│ • `/convert_giftcard` - ₹ → Diamonds│
+│ • `/get_conversion` - View rates    │
+│ • `/convert_currency` - Simulate   │
+└─────────────────────────────────────┘
+
+✨ **Safe & Secure Conversions**
+        """,
+        color=0x9932cc,
+        timestamp=datetime.datetime.now()
+    )
+    
+    embed.add_field(
+        name="💎➡️₹ Diamond to Rupee",
+        value="```/convert_points [amount]```\nConvert your Diamonds to gift card balance",
+        inline=True
+    )
+    embed.add_field(
+        name="₹➡️💎 Rupee to Diamond",
+        value="```/convert_giftcard [amount]```\nConvert gift card balance back to Diamonds",
+        inline=True
+    )
+    embed.add_field(
+        name="📊 View Rates",
+        value="```/get_conversion```\nSee conversion rates and examples",
+        inline=True
+    )
+    embed.add_field(
+        name="🌍 Currency Simulator",
+        value="```/convert_currency [currency]```\nSimulate value in other currencies",
+        inline=False
+    )
+    
+    embed.set_footer(text="💡 All conversions use 100:1 ratio with no decimals")
+    embed.set_thumbnail(url="https://img.icons8.com/color/96/000000/exchange.png")
+    
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"✅ Conversion panel setup in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="setup_daily_channel", description="Setup daily rewards panel for a channel")
+@discord.app_commands.describe(channel="Channel to setup daily rewards panel")
+async def setup_daily_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🎁 Daily Diamond Rewards",
+        description="""
+┌─────────────────────────────────────┐
+│    **🔹 Daily Reward System**      │
+│                                     │
+│ 💎 **Base Reward:** 100 Diamonds   │
+│ 🔥 **Streak Bonus:** +10 per day   │
+│ ⏰ **Cooldown:** 24 hours          │
+│ 🎯 **Streak Window:** 36 hours     │
+│                                     │
+│ Use `/claim_daily` to get your     │
+│ daily Diamond reward!               │
+└─────────────────────────────────────┘
+
+✨ **Keep your streak alive for bonus rewards!**
+        """,
+        color=0x00ff88,
+        timestamp=datetime.datetime.now()
+    )
+    
+    embed.add_field(
+        name="💎 Base Daily Reward",
+        value="```100 Diamonds```\nGuaranteed every 24 hours",
+        inline=True
+    )
+    embed.add_field(
+        name="🔥 Streak Bonus",
+        value="```+10 per day```\nUp to +200 bonus maximum",
+        inline=True
+    )
+    embed.add_field(
+        name="⏰ Claim Rules",
+        value="```• Once per 24 hours\n• 36h window for streak```",
+        inline=True
+    )
+    embed.add_field(
+        name="📝 How to Claim",
+        value="```/claim_daily```\nClaim your daily reward instantly",
+        inline=False
+    )
+    
+    embed.set_footer(text="🎁 Daily rewards help you build your Diamond wealth!")
+    embed.set_thumbnail(url="https://img.icons8.com/color/96/000000/gift.png")
+    
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"✅ Daily rewards panel setup in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="setup_minigames_channel", description="Setup mini games panel for a channel")
+@discord.app_commands.describe(channel="Channel to setup mini games panel")
+async def setup_minigames_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🎲 Diamond Mini Games",
+        description="""
+┌─────────────────────────────────────┐
+│     **🔹 Fun Games & Gambling**    │
+│                                     │
+│ 🪙 **Coin Flip** - Free to play    │
+│ 🎯 **Dice Game** - Guess the roll  │
+│ 🧩 **ToS Coin** - High risk/reward │
+│                                     │
+│ Win Diamonds by testing your luck! │
+└─────────────────────────────────────┘
+
+✨ **Multiple ways to earn Diamonds!**
+        """,
+        color=0xf39c12,
+        timestamp=datetime.datetime.now()
+    )
+    
+    embed.add_field(
+        name="🪙 Coin Flip",
+        value="```/coinflip [heads/tails]```\n• Free to play\n• Win: +100 Diamonds\n• Lose: No penalty",
+        inline=True
+    )
+    embed.add_field(
+        name="🎯 Dice Game",
+        value="```/dice [1-6]```\n• Free to play\n• Win: +100 Diamonds\n• Lose: No penalty",
+        inline=True
+    )
+    embed.add_field(
+        name="🧩 ToS Coin Flip",
+        value="```/tos_coin [head/tail] [bet]```\n• Min bet: 100 Diamonds\n• Win: Double your bet\n• Lose: Lose your bet",
+        inline=True
+    )
+    embed.add_field(
+        name="⚠️ Gambling Warning",
+        value="```ToS Coin involves real risk!\nOnly bet what you can afford to lose.```",
+        inline=False
+    )
+    
+    embed.set_footer(text="🎲 Good luck and gamble responsibly!")
+    embed.set_thumbnail(url="https://img.icons8.com/color/96/000000/dice.png")
+    
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"✅ Mini games panel setup in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="setup_points_channel", description="Setup points info panel for a channel")
+@discord.app_commands.describe(channel="Channel to setup points info panel")
+async def setup_points_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="💎 Diamond Points System",
+        description="""
+┌─────────────────────────────────────┐
+│   **🔹 Manage Your Diamonds**      │
+│                                     │
+│ 👤 **Check Balances**              │
+│ 💸 **Transfer Points**             │
+│ ⚡ **View Multipliers**            │
+│                                     │
+│ Track and manage your Diamond      │
+│ wealth with these commands!         │
+└─────────────────────────────────────┘
+
+✨ **Full Diamond management suite!**
+        """,
+        color=0x3498db,
+        timestamp=datetime.datetime.now()
+    )
+    
+    embed.add_field(
+        name="👤 Check Points",
+        value="```/get_points [@user]```\nView Diamond balance and stats\nLeave empty to check yourself",
+        inline=True
+    )
+    embed.add_field(
+        name="💸 Transfer Points",
+        value="```/transfer_points [@user] [amount]```\nSend Diamonds to other users\nInstant and secure",
+        inline=True
+    )
+    embed.add_field(
+        name="⚡ View Multipliers",
+        value="```/get_multipliers```\nSee your earning bonuses\nTrack streak rewards",
+        inline=True
+    )
+    embed.add_field(
+        name="💡 Pro Tips",
+        value="```• Keep daily streaks for bonuses\n• Transfer to friends safely\n• Check stats regularly```",
+        inline=False
+    )
+    
+    embed.set_footer(text="💎 Your Diamonds, your control!")
+    embed.set_thumbnail(url="https://img.icons8.com/color/96/000000/wallet.png")
+    
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"✅ Points info panel setup in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="setup_dm_check_channel", description="Setup DM checker panel for a channel")
+@discord.app_commands.describe(channel="Channel to setup DM checker panel")
+async def setup_dm_check_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="📬 Direct Message Checker",
+        description="""
+┌─────────────────────────────────────┐
+│   **🔹 Test Your DM Settings**     │
+│                                     │
+│ 🔐 **Why is this important?**      │
+│ • Daily reward notifications       │
+│ • Transfer confirmations            │
+│ • Important bot updates             │
+│                                     │
+│ Use `/test_dm` to check if the     │
+│ bot can send you messages!          │
+└─────────────────────────────────────┘
+
+⚠️ **DMs are required for some features!**
+        """,
+        color=0xe67e22,
+        timestamp=datetime.datetime.now()
+    )
+    
+    embed.add_field(
+        name="📩 Test Command",
+        value="```/test_dm```\nInstantly check if DMs work",
+        inline=True
+    )
+    embed.add_field(
+        name="✅ If Working",
+        value="```You'll get notifications for:\n• Daily claims\n• Transfers\n• Updates```",
+        inline=True
+    )
+    embed.add_field(
+        name="❌ If Not Working",
+        value="```Enable DMs in:\nUser Settings >\nPrivacy & Safety```",
+        inline=True
+    )
+    embed.add_field(
+        name="🔧 How to Fix DMs",
+        value="```1. Open Discord Settings\n2. Go to Privacy & Safety\n3. Enable 'Direct messages from server members'\n4. Test again with /test_dm```",
+        inline=False
+    )
+    
+    embed.set_footer(text="📬 DM Test is quick and easy!")
+    embed.set_thumbnail(url="https://img.icons8.com/color/96/000000/message.png")
+    
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"✅ DM checker panel setup in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="setup_giftcard_channel", description="Setup gift card store panel for a channel")
+@discord.app_commands.describe(channel="Channel to setup gift card store panel")
+async def setup_giftcard_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🛍️ Gift Card Store",
+        description="""
+┌─────────────────────────────────────┐
+│    **🔹 Gift Card Information**    │
+│                                     │
+│ 💳 **Conversion Rate:**             │
+│ 100 Diamonds = ₹1 Gift Card        │
+│                                     │
+│ 🎁 **Available Values:**           │
+│ • ₹5 = 500 Diamonds                │
+│ • ₹10 = 1,000 Diamonds             │
+│ • ₹25 = 2,500 Diamonds             │
+│ • ₹50 = 5,000 Diamonds             │
+│ • ₹100 = 10,000 Diamonds           │
+└─────────────────────────────────────┘
+
+💰 **Convert your Diamonds to real value!**
+        """,
+        color=0xe91e63,
+        timestamp=datetime.datetime.now()
+    )
+    
+    embed.add_field(
+        name="💎➡️🎁 Diamond to Gift Card",
+        value="```/convert_points [diamonds]```\nMinimum: 100 Diamonds\nConversion: 100:1 ratio",
+        inline=True
+    )
+    embed.add_field(
+        name="🎁➡️💎 Gift Card to Diamond",
+        value="```/convert_giftcard [rupees]```\nGet your Diamonds back\nSame 100:1 ratio",
+        inline=True
+    )
+    embed.add_field(
+        name="📊 Check Rates",
+        value="```/get_conversion```\nView all conversion examples\nSee your current value",
+        inline=True
+    )
+    embed.add_field(
+        name="🏪 Popular Gift Card Values",
+        value="```₹5   → 500 Diamonds\n₹10  → 1,000 Diamonds\n₹25  → 2,500 Diamonds\n₹50  → 5,000 Diamonds\n₹100 → 10,000 Diamonds```",
+        inline=False
+    )
+    
+    embed.set_footer(text="🛍️ Turn your gaming success into real rewards!")
+    embed.set_thumbnail(url="https://img.icons8.com/color/96/000000/gift-card.png")
+    
+    await channel.send(embed=embed)
+    await interaction.response.send_message(f"✅ Gift card store panel setup in {channel.mention}!", ephemeral=True)
+
+@bot.tree.command(name="setup_all_diamond_channels", description="Setup all Diamond system panels in suggested channels")
+async def setup_all_diamond_channels(interaction: discord.Interaction):
+    guild = interaction.guild
+    created_channels = []
+    
+    # Define channel setups
+    channel_configs = [
+        ("💰・convert", "Conversion commands", setup_convert_channel),
+        ("🎁・daily-rewards", "Daily rewards", setup_daily_channel),
+        ("🎲・minigames", "Mini games", setup_minigames_channel),
+        ("💎・points-info", "Points management", setup_points_channel),
+        ("📬・dm-check", "DM testing", setup_dm_check_channel),
+        ("🛍️・giftcard-store", "Gift card store", setup_giftcard_channel)
+    ]
+    
+    for channel_name, description, setup_func in channel_configs:
+        # Check if channel already exists
+        existing_channel = discord.utils.get(guild.text_channels, name=channel_name)
+        
+        if not existing_channel:
+            # Create the channel
+            try:
+                new_channel = await guild.create_text_channel(channel_name)
+                created_channels.append(f"✅ Created {new_channel.mention}")
+                
+                # Set up the panel in the new channel
+                embed = await setup_func.__wrapped__(interaction, new_channel)
+                
+            except Exception as e:
+                created_channels.append(f"❌ Failed to create {channel_name}: {str(e)}")
+        else:
+            created_channels.append(f"⚠️ {existing_channel.mention} already exists")
+    
+    result_embed = discord.Embed(
+        title="🚀 Diamond System Channels Setup",
+        description="Here's the status of all Diamond system channels:",
+        color=0x00ff88
+    )
+    
+    result_text = "\n".join(created_channels)
+    result_embed.add_field(
+        name="📋 Setup Results",
+        value=f"```{result_text}```",
+        inline=False
+    )
+    
+    result_embed.add_field(
+        name="💡 Recommended Channel Organization",
+        value="```💰・convert - All conversion commands\n🎁・daily-rewards - Daily claim tracking\n🎲・minigames - All bot games\n💎・points-info - Balance & transfers\n📬・dm-check - DM testing\n🛍️・giftcard-store - Gift card info```",
+        inline=False
+    )
+    
+    result_embed.set_footer(text="✨ All Diamond system features are now organized!")
+    
+    await interaction.response.send_message(embed=result_embed)
+
                 inline=True
             )
             embed2.add_field(
