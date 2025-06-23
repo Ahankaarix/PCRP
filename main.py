@@ -131,7 +131,8 @@ DEFAULT_CHANNELS = {
     "general": int(os.getenv("GENERAL_CHANNEL_ID", "0")),
     "minigames": int(os.getenv("MINIGAMES_CHANNEL_ID", "0")),
     "convert": int(os.getenv("CONVERT_CHANNEL_ID", "0")),
-    "daily": int(os.getenv("DAILY_CHANNEL_ID", "0"))
+    "daily": int(os.getenv("DAILY_CHANNEL_ID", "0")),
+    "transcript": int(os.getenv("TRANSCRIPT_CHANNEL_ID", "0"))
 }
 
 # Helper function to get channel IDs (automatic from environment or database fallback)
@@ -311,7 +312,75 @@ class CloseTicketView(Button3DView):
     @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
+        guild = interaction.guild
 
+        # Create transcript before closing
+        config = await get_channel_config(guild.id)
+        transcript_channel_id = config.get("transcript")
+        transcript_channel = guild.get_channel(transcript_channel_id) if transcript_channel_id else None
+
+        if transcript_channel:
+            # Get ticket info from database
+            async with aiosqlite.connect(bot.db_path) as db:
+                async with db.execute(
+                    "SELECT user_id, created_at FROM tickets WHERE channel_id = ?",
+                    (channel.id,)
+                ) as cursor:
+                    ticket_info = await cursor.fetchone()
+
+            # Collect messages for transcript
+            messages = []
+            async for message in channel.history(limit=None, oldest_first=True):
+                if not message.author.bot or message.embeds or message.attachments:
+                    timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    content = message.content or "[Embed/Attachment]"
+                    messages.append(f"[{timestamp}] {message.author}: {content}")
+
+            # Create transcript content
+            transcript_content = f"""
+TICKET TRANSCRIPT - {channel.name}
+=============================================
+User: <@{ticket_info[0] if ticket_info else 'Unknown'}>
+Created: {ticket_info[1] if ticket_info else 'Unknown'}
+Closed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Channel: #{channel.name}
+=============================================
+
+{chr(10).join(messages)}
+"""
+
+            # Send transcript to transcript channel
+            transcript_embed = discord.Embed(
+                title="🎫 Ticket Transcript",
+                description=f"Transcript for ticket: **{channel.name}**",
+                color=0x3498db,
+                timestamp=datetime.datetime.now()
+            )
+            
+            if ticket_info:
+                user = guild.get_member(ticket_info[0])
+                if user:
+                    transcript_embed.add_field(name="👤 User", value=user.mention, inline=True)
+                    transcript_embed.add_field(name="📅 Created", value=ticket_info[1], inline=True)
+            
+            transcript_embed.add_field(name="🔒 Closed By", value=interaction.user.mention, inline=True)
+
+            # Save transcript as text file if too long
+            if len(transcript_content) > 2000:
+                transcript_file = discord.File(
+                    io.StringIO(transcript_content),
+                    filename=f"transcript-{channel.name}-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+                )
+                await transcript_channel.send(embed=transcript_embed, file=transcript_file)
+            else:
+                transcript_embed.add_field(
+                    name="📝 Messages",
+                    value=f"```{transcript_content[-1000:]}```",
+                    inline=False
+                )
+                await transcript_channel.send(embed=transcript_embed)
+
+        # Update database
         async with aiosqlite.connect(bot.db_path) as db:
             await db.execute(
                 "UPDATE tickets SET status = 'closed' WHERE channel_id = ?",
@@ -319,7 +388,7 @@ class CloseTicketView(Button3DView):
             )
             await db.commit()
 
-        await interaction.response.send_message("Ticket will be deleted in 10 seconds...")
+        await interaction.response.send_message("📝 Transcript saved! Ticket will be deleted in 10 seconds...")
         await asyncio.sleep(10)
         await channel.delete()
 
@@ -470,15 +539,15 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
         required=True
     )
 
-    convert_channel = discord.ui.TextInput(
-        label="💱 Convert Channel ID",
-        placeholder="Channel ID for currency conversion",
-        required=False
+    transcript_channel = discord.ui.TextInput(
+        label="📝 Transcript Channel ID",
+        placeholder="Channel ID for ticket transcripts",
+        required=True
     )
 
-    daily_channel = discord.ui.TextInput(
-        label="🎁 Daily Rewards Channel ID",
-        placeholder="Channel ID for daily claims",
+    convert_channel = discord.ui.TextInput(
+        label="💱 Convert Channel ID (Optional)",
+        placeholder="Channel ID for currency conversion",
         required=False
     )
 
@@ -490,13 +559,12 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
             channels_to_validate = [
                 ("ticket", self.ticket_channel.value),
                 ("general", self.general_channel.value),
-                ("minigames", self.minigames_channel.value)
+                ("minigames", self.minigames_channel.value),
+                ("transcript", self.transcript_channel.value)
             ]
             
             if self.convert_channel.value:
                 channels_to_validate.append(("convert", self.convert_channel.value))
-            if self.daily_channel.value:
-                channels_to_validate.append(("daily", self.daily_channel.value))
 
             validated_channels = {}
             for channel_type, channel_id_str in channels_to_validate:
