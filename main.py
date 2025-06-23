@@ -93,6 +93,28 @@ class DiscordBot(commands.Bot):
                 )
             ''')
 
+            # Diamond currency table
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS diamonds (
+                    user_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER,
+                    balance INTEGER DEFAULT 0,
+                    last_daily TIMESTAMP,
+                    daily_streak INTEGER DEFAULT 0,
+                    total_earned INTEGER DEFAULT 0,
+                    multiplier REAL DEFAULT 1.0
+                )
+            ''')
+
+            # Giftcard table
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS giftcards (
+                    user_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER,
+                    balance REAL DEFAULT 0.0
+                )
+            ''')
+
             await db.commit()
 
 # Birthday checker task
@@ -134,6 +156,47 @@ async def birthday_check():
                 await channel.send(embed=embed)
 
 bot = DiscordBot()
+
+# Helper functions for Diamond system
+async def get_user_diamonds(user_id: int, guild_id: int) -> int:
+    async with aiosqlite.connect(bot.db_path) as db:
+        async with db.execute(
+            "SELECT balance FROM diamonds WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id)
+        ) as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 0
+
+async def add_diamonds(user_id: int, guild_id: int, amount: int):
+    async with aiosqlite.connect(bot.db_path) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO diamonds (user_id, guild_id, balance, total_earned)
+            VALUES (?, ?, 
+                COALESCE((SELECT balance FROM diamonds WHERE user_id = ? AND guild_id = ?), 0) + ?,
+                COALESCE((SELECT total_earned FROM diamonds WHERE user_id = ? AND guild_id = ?), 0) + ?)
+        ''', (user_id, guild_id, user_id, guild_id, amount, user_id, guild_id, amount))
+        await db.commit()
+
+async def remove_diamonds(user_id: int, guild_id: int, amount: int) -> bool:
+    current_balance = await get_user_diamonds(user_id, guild_id)
+    if current_balance >= amount:
+        async with aiosqlite.connect(bot.db_path) as db:
+            await db.execute(
+                "UPDATE diamonds SET balance = balance - ? WHERE user_id = ? AND guild_id = ?",
+                (amount, user_id, guild_id)
+            )
+            await db.commit()
+        return True
+    return False
+
+async def get_user_giftcard_balance(user_id: int, guild_id: int) -> float:
+    async with aiosqlite.connect(bot.db_path) as db:
+        async with db.execute(
+            "SELECT balance FROM giftcards WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id)
+        ) as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 0.0
 
 # 3D Button View Class
 class Button3DView(discord.ui.View):
@@ -696,6 +759,27 @@ class AllFeaturesView(Button3DView):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="💎 Check Diamonds", style=discord.ButtonStyle.blurple, emoji="💎", custom_id="check_diamonds")
+    async def check_diamonds(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
+        balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+        giftcard_balance = await get_user_giftcard_balance(interaction.user.id, interaction.guild.id)
+        
+        embed = discord.Embed(
+            title="💎 Your Diamond Balance",
+            color=0x9932cc
+        )
+        embed.add_field(name="💎 Diamonds", value=f"```{balance:,}```", inline=True)
+        embed.add_field(name="🎁 Gift Card", value=f"```₹{giftcard_balance:.2f}```", inline=True)
+        embed.add_field(name="💱 Conversion Rate", value="```100 💎 = ₹1```", inline=True)
+        
+        rupee_value = balance // 100
+        embed.add_field(name="💰 Rupee Value", value=f"```₹{rupee_value}```", inline=False)
+        embed.set_footer(text="Use /claim_daily to earn more diamonds!")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 class BirthdayModal(discord.ui.Modal, title="🎂 Set Your Birthday"):
     def __init__(self):
         super().__init__()
@@ -833,6 +917,566 @@ class GiveawayView(Button3DView):
 
                 await interaction.response.send_message("You've joined the giveaway! 🎉", ephemeral=True)
 
+# DIAMOND SYSTEM SLASH COMMANDS
+@bot.tree.command(name="get_conversion", description="View Diamond to gift card conversion rates")
+async def get_conversion(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="💎 Diamond Conversion Rates",
+        description="See how many Diamonds you need for gift cards!",
+        color=0x9932cc
+    )
+    
+    embed.add_field(
+        name="💱 Conversion Rate",
+        value="```100 Diamonds = ₹1```",
+        inline=False
+    )
+    
+    # Common conversion examples
+    conversions = [
+        (500, 5),
+        (1000, 10),
+        (2500, 25),
+        (5000, 50),
+        (10000, 100)
+    ]
+    
+    conversion_text = ""
+    for diamonds, rupees in conversions:
+        conversion_text += f"💎 {diamonds:,} → ₹{rupees}\n"
+    
+    embed.add_field(
+        name="📊 Common Conversions",
+        value=f"```{conversion_text}```",
+        inline=False
+    )
+    
+    user_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    user_rupee_value = user_balance // 100
+    
+    embed.add_field(
+        name="💰 Your Current Value",
+        value=f"```💎 {user_balance:,} = ₹{user_rupee_value}```",
+        inline=False
+    )
+    
+    embed.set_footer(text="All values rounded down • No decimals allowed")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="convert_points", description="Convert your Diamonds into a gift card")
+@discord.app_commands.describe(amount="Amount of Diamonds to convert (minimum 100)")
+async def convert_points(interaction: discord.Interaction, amount: int):
+    if amount < 100:
+        await interaction.response.send_message("❌ Minimum conversion is 100 Diamonds!", ephemeral=True)
+        return
+    
+    user_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    
+    if user_balance < amount:
+        await interaction.response.send_message(f"❌ You only have {user_balance:,} Diamonds!", ephemeral=True)
+        return
+    
+    # Convert diamonds to rupees (rounded down)
+    rupee_value = amount // 100
+    
+    if rupee_value == 0:
+        await interaction.response.send_message("❌ You need at least 100 Diamonds to convert!", ephemeral=True)
+        return
+    
+    # Remove diamonds and add to gift card balance
+    await remove_diamonds(interaction.user.id, interaction.guild.id, amount)
+    
+    async with aiosqlite.connect(bot.db_path) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO giftcards (user_id, guild_id, balance)
+            VALUES (?, ?, COALESCE((SELECT balance FROM giftcards WHERE user_id = ? AND guild_id = ?), 0) + ?)
+        ''', (interaction.user.id, interaction.guild.id, interaction.user.id, interaction.guild.id, rupee_value))
+        await db.commit()
+    
+    embed = discord.Embed(
+        title="✅ Conversion Successful!",
+        description=f"You've successfully converted your Diamonds!",
+        color=0x00ff88
+    )
+    embed.add_field(name="💎 Diamonds Used", value=f"```{amount:,}```", inline=True)
+    embed.add_field(name="🎁 Gift Card Added", value=f"```₹{rupee_value}```", inline=True)
+    
+    new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    new_giftcard = await get_user_giftcard_balance(interaction.user.id, interaction.guild.id)
+    
+    embed.add_field(name="💎 Remaining Diamonds", value=f"```{new_balance:,}```", inline=True)
+    embed.add_field(name="🎁 Total Gift Card", value=f"```₹{new_giftcard:.2f}```", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="convert_giftcard", description="Convert your gift card balance back into Diamonds")
+@discord.app_commands.describe(amount="Rupee amount to convert back to Diamonds")
+async def convert_giftcard(interaction: discord.Interaction, amount: float):
+    if amount <= 0:
+        await interaction.response.send_message("❌ Amount must be positive!", ephemeral=True)
+        return
+    
+    giftcard_balance = await get_user_giftcard_balance(interaction.user.id, interaction.guild.id)
+    
+    if giftcard_balance < amount:
+        await interaction.response.send_message(f"❌ You only have ₹{giftcard_balance:.2f} in gift card balance!", ephemeral=True)
+        return
+    
+    # Convert rupees back to diamonds
+    diamonds_to_add = int(amount * 100)  # 1 rupee = 100 diamonds
+    
+    # Remove from gift card and add diamonds
+    async with aiosqlite.connect(bot.db_path) as db:
+        await db.execute(
+            "UPDATE giftcards SET balance = balance - ? WHERE user_id = ? AND guild_id = ?",
+            (amount, interaction.user.id, interaction.guild.id)
+        )
+        await db.commit()
+    
+    await add_diamonds(interaction.user.id, interaction.guild.id, diamonds_to_add)
+    
+    embed = discord.Embed(
+        title="✅ Gift Card Converted!",
+        description=f"You've successfully converted your gift card back to Diamonds!",
+        color=0x00ff88
+    )
+    embed.add_field(name="🎁 Gift Card Used", value=f"```₹{amount}```", inline=True)
+    embed.add_field(name="💎 Diamonds Added", value=f"```{diamonds_to_add:,}```", inline=True)
+    
+    new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    new_giftcard = await get_user_giftcard_balance(interaction.user.id, interaction.guild.id)
+    
+    embed.add_field(name="💎 Total Diamonds", value=f"```{new_balance:,}```", inline=True)
+    embed.add_field(name="🎁 Remaining Gift Card", value=f"```₹{new_giftcard:.2f}```", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="convert_currency", description="Simulate Diamond value in different currencies (for reference only)")
+@discord.app_commands.describe(currency="Currency to convert to (USD, EUR, GBP, etc.)")
+async def convert_currency(interaction: discord.Interaction, currency: str):
+    user_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    rupee_value = user_balance // 100
+    
+    # Sample exchange rates (these would normally come from an API)
+    exchange_rates = {
+        "USD": 0.012,  # 1 INR = 0.012 USD
+        "EUR": 0.011,  # 1 INR = 0.011 EUR
+        "GBP": 0.0095, # 1 INR = 0.0095 GBP
+        "CAD": 0.016,  # 1 INR = 0.016 CAD
+        "AUD": 0.018,  # 1 INR = 0.018 AUD
+        "JPY": 1.8,    # 1 INR = 1.8 JPY
+    }
+    
+    currency = currency.upper()
+    
+    if currency not in exchange_rates:
+        available = ", ".join(exchange_rates.keys())
+        await interaction.response.send_message(f"❌ Currency not supported! Available: {available}", ephemeral=True)
+        return
+    
+    converted_value = rupee_value * exchange_rates[currency]
+    
+    embed = discord.Embed(
+        title="💱 Currency Conversion Simulation",
+        description="⚠️ **This is for reference only - your balance is not converted!**",
+        color=0xf39c12
+    )
+    
+    embed.add_field(name="💎 Your Diamonds", value=f"```{user_balance:,}```", inline=True)
+    embed.add_field(name="💰 Rupee Value", value=f"```₹{rupee_value}```", inline=True)
+    embed.add_field(name=f"🌍 {currency} Value", value=f"```{converted_value:.2f} {currency}```", inline=True)
+    
+    embed.add_field(
+        name="📊 Conversion Rate",
+        value=f"```1 INR = {exchange_rates[currency]} {currency}```",
+        inline=False
+    )
+    
+    embed.set_footer(text="Note: Exchange rates are approximate and for simulation only")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="claim_daily", description="Claim your daily Diamond reward")
+async def claim_daily(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    guild_id = interaction.guild.id
+    now = datetime.datetime.now()
+    
+    async with aiosqlite.connect(bot.db_path) as db:
+        # Get user's daily claim data
+        async with db.execute(
+            "SELECT last_daily, daily_streak FROM diamonds WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id)
+        ) as cursor:
+            result = await cursor.fetchone()
+        
+        if result:
+            last_daily_str, current_streak = result
+            if last_daily_str:
+                last_daily = datetime.datetime.fromisoformat(last_daily_str)
+                time_since_last = now - last_daily
+                
+                # Check if already claimed today
+                if time_since_last.total_seconds() < 86400:  # 24 hours
+                    time_left = 86400 - time_since_last.total_seconds()
+                    hours_left = int(time_left // 3600)
+                    minutes_left = int((time_left % 3600) // 60)
+                    
+                    embed = discord.Embed(
+                        title="⏰ Daily Already Claimed",
+                        description=f"Come back in {hours_left}h {minutes_left}m to claim again!",
+                        color=0xe74c3c
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                
+                # Check if within 36 hours to maintain streak
+                if time_since_last.total_seconds() <= 129600:  # 36 hours
+                    new_streak = current_streak + 1
+                else:
+                    new_streak = 1  # Reset streak
+            else:
+                new_streak = 1
+        else:
+            new_streak = 1
+        
+        # Calculate reward
+        base_reward = 100
+        streak_bonus = min(new_streak * 10, 200)  # Max 200 bonus
+        total_reward = base_reward + streak_bonus
+        
+        # Update database
+        await db.execute('''
+            INSERT OR REPLACE INTO diamonds (user_id, guild_id, balance, last_daily, daily_streak, total_earned)
+            VALUES (?, ?, 
+                COALESCE((SELECT balance FROM diamonds WHERE user_id = ? AND guild_id = ?), 0) + ?,
+                ?, ?,
+                COALESCE((SELECT total_earned FROM diamonds WHERE user_id = ? AND guild_id = ?), 0) + ?)
+        ''', (user_id, guild_id, user_id, guild_id, total_reward, now.isoformat(), new_streak, user_id, guild_id, total_reward))
+        await db.commit()
+    
+    # Try to send DM
+    try:
+        dm_embed = discord.Embed(
+            title="💎 Daily Reward Claimed!",
+            description=f"You've earned {total_reward} Diamonds!",
+            color=0x00ff88
+        )
+        await interaction.user.send(embed=dm_embed)
+        dm_status = "✅ DM sent successfully!"
+    except:
+        dm_status = "❌ Couldn't send DM - check your DM settings!"
+    
+    embed = discord.Embed(
+        title="💎 Daily Reward Claimed!",
+        description="Your daily Diamonds have been added to your balance!",
+        color=0x00ff88
+    )
+    embed.add_field(name="💎 Base Reward", value=f"```{base_reward}```", inline=True)
+    embed.add_field(name="🔥 Streak Bonus", value=f"```{streak_bonus}```", inline=True)
+    embed.add_field(name="💰 Total Earned", value=f"```{total_reward}```", inline=True)
+    embed.add_field(name="📅 Current Streak", value=f"```{new_streak} days```", inline=True)
+    embed.add_field(name="📬 DM Status", value=dm_status, inline=False)
+    
+    new_balance = await get_user_diamonds(user_id, guild_id)
+    embed.add_field(name="💎 Total Balance", value=f"```{new_balance:,}```", inline=False)
+    
+    embed.set_footer(text="💡 Claim within 36 hours to maintain your streak!")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="get_points", description="Check Diamond balance for yourself or another user")
+@discord.app_commands.describe(user="User to check (leave empty for yourself)")
+async def get_points(interaction: discord.Interaction, user: Optional[discord.Member] = None):
+    target = user or interaction.user
+    
+    balance = await get_user_diamonds(target.id, interaction.guild.id)
+    giftcard_balance = await get_user_giftcard_balance(target.id, interaction.guild.id)
+    
+    # Get additional stats
+    async with aiosqlite.connect(bot.db_path) as db:
+        async with db.execute(
+            "SELECT total_earned, daily_streak, multiplier FROM diamonds WHERE user_id = ? AND guild_id = ?",
+            (target.id, interaction.guild.id)
+        ) as cursor:
+            result = await cursor.fetchone()
+    
+    if result:
+        total_earned, daily_streak, multiplier = result
+    else:
+        total_earned, daily_streak, multiplier = 0, 0, 1.0
+    
+    embed = discord.Embed(
+        title=f"💎 {target.display_name}'s Diamond Stats",
+        color=0x9932cc
+    )
+    embed.add_field(name="💎 Current Balance", value=f"```{balance:,}```", inline=True)
+    embed.add_field(name="🎁 Gift Card Balance", value=f"```₹{giftcard_balance:.2f}```", inline=True)
+    embed.add_field(name="📊 Total Earned", value=f"```{total_earned:,}```", inline=True)
+    embed.add_field(name="🔥 Daily Streak", value=f"```{daily_streak} days```", inline=True)
+    embed.add_field(name="⚡ Multiplier", value=f"```{multiplier}x```", inline=True)
+    
+    rupee_value = balance // 100
+    embed.add_field(name="💰 Rupee Value", value=f"```₹{rupee_value}```", inline=True)
+    
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text="Use /claim_daily to earn more diamonds!")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="transfer_points", description="Transfer Diamonds to another user")
+@discord.app_commands.describe(
+    user="User to transfer Diamonds to",
+    amount="Amount of Diamonds to transfer"
+)
+async def transfer_points(interaction: discord.Interaction, user: discord.Member, amount: int):
+    if user.id == interaction.user.id:
+        await interaction.response.send_message("❌ You can't transfer Diamonds to yourself!", ephemeral=True)
+        return
+    
+    if user.bot:
+        await interaction.response.send_message("❌ You can't transfer Diamonds to bots!", ephemeral=True)
+        return
+    
+    if amount <= 0:
+        await interaction.response.send_message("❌ Transfer amount must be positive!", ephemeral=True)
+        return
+    
+    sender_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    
+    if sender_balance < amount:
+        await interaction.response.send_message(f"❌ You only have {sender_balance:,} Diamonds!", ephemeral=True)
+        return
+    
+    # Perform transfer
+    await remove_diamonds(interaction.user.id, interaction.guild.id, amount)
+    await add_diamonds(user.id, interaction.guild.id, amount)
+    
+    embed = discord.Embed(
+        title="✅ Transfer Successful!",
+        description=f"You've transferred Diamonds to {user.mention}!",
+        color=0x00ff88
+    )
+    embed.add_field(name="💎 Amount Transferred", value=f"```{amount:,}```", inline=True)
+    embed.add_field(name="👤 Recipient", value=f"```{user.display_name}```", inline=True)
+    
+    new_sender_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    new_recipient_balance = await get_user_diamonds(user.id, interaction.guild.id)
+    
+    embed.add_field(name="💎 Your New Balance", value=f"```{new_sender_balance:,}```", inline=True)
+    embed.add_field(name="💎 Their New Balance", value=f"```{new_recipient_balance:,}```", inline=True)
+    
+    # Try to notify recipient via DM
+    try:
+        dm_embed = discord.Embed(
+            title="💎 Diamonds Received!",
+            description=f"You received {amount:,} Diamonds from {interaction.user.display_name}!",
+            color=0x00ff88
+        )
+        await user.send(embed=dm_embed)
+    except:
+        pass  # Ignore if DM fails
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="get_multipliers", description="View your current earning multipliers")
+async def get_multipliers(interaction: discord.Interaction):
+    async with aiosqlite.connect(bot.db_path) as db:
+        async with db.execute(
+            "SELECT multiplier, daily_streak FROM diamonds WHERE user_id = ? AND guild_id = ?",
+            (interaction.user.id, interaction.guild.id)
+        ) as cursor:
+            result = await cursor.fetchone()
+    
+    if result:
+        multiplier, daily_streak = result
+    else:
+        multiplier, daily_streak = 1.0, 0
+    
+    embed = discord.Embed(
+        title="⚡ Your Multipliers",
+        description="Here are your current earning bonuses!",
+        color=0xf39c12
+    )
+    
+    embed.add_field(name="🎯 Base Multiplier", value=f"```{multiplier}x```", inline=True)
+    embed.add_field(name="🔥 Streak Bonus", value=f"```+{min(daily_streak * 10, 200)} per daily```", inline=True)
+    embed.add_field(name="📅 Current Streak", value=f"```{daily_streak} days```", inline=True)
+    
+    # Calculate potential daily reward
+    base_daily = 100
+    streak_bonus = min(daily_streak * 10, 200)
+    total_daily = int((base_daily + streak_bonus) * multiplier)
+    
+    embed.add_field(name="💎 Next Daily Reward", value=f"```{total_daily} Diamonds```", inline=False)
+    
+    embed.add_field(
+        name="📊 Multiplier Sources",
+        value="```• Base: 1.0x\n• Future bonuses coming soon!```",
+        inline=False
+    )
+    
+    embed.set_footer(text="Keep your streak going for maximum rewards!")
+    await interaction.response.send_message(embed=embed)
+
+# MINI GAMES
+@bot.tree.command(name="coinflip", description="🪙 Play coin toss - Guess Heads or Tails to win 100 Diamonds!")
+@discord.app_commands.describe(choice="Choose Heads or Tails")
+@discord.app_commands.choices(choice=[
+    discord.app_commands.Choice(name="Heads", value="heads"),
+    discord.app_commands.Choice(name="Tails", value="tails")
+])
+async def coinflip(interaction: discord.Interaction, choice: discord.app_commands.Choice[str]):
+    result = random.choice(["heads", "tails"])
+    won = choice.value == result
+    
+    embed = discord.Embed(
+        title="🪙 Coin Flip Results",
+        color=0x00ff88 if won else 0xe74c3c
+    )
+    
+    embed.add_field(name="🎯 Your Choice", value=f"```{choice.name}```", inline=True)
+    embed.add_field(name="🪙 Result", value=f"```{result.title()}```", inline=True)
+    
+    if won:
+        await add_diamonds(interaction.user.id, interaction.guild.id, 100)
+        embed.add_field(name="🎉 Result", value="```🎉 YOU WON! 🎉```", inline=False)
+        embed.add_field(name="💎 Reward", value="```+100 Diamonds```", inline=True)
+        
+        new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+        embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
+    else:
+        embed.add_field(name="😔 Result", value="```❌ You Lost!```", inline=False)
+        embed.add_field(name="💎 Reward", value="```No reward```", inline=True)
+        embed.add_field(name="💡 Tip", value="```Try again - no cost to play!```", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="dice", description="🎯 Guess the dice number (1-6) to win 100 Diamonds!")
+@discord.app_commands.describe(guess="Your guess (1-6)")
+@discord.app_commands.choices(guess=[
+    discord.app_commands.Choice(name="1", value=1),
+    discord.app_commands.Choice(name="2", value=2),
+    discord.app_commands.Choice(name="3", value=3),
+    discord.app_commands.Choice(name="4", value=4),
+    discord.app_commands.Choice(name="5", value=5),
+    discord.app_commands.Choice(name="6", value=6)
+])
+async def dice(interaction: discord.Interaction, guess: discord.app_commands.Choice[int]):
+    result = random.randint(1, 6)
+    won = guess.value == result
+    
+    embed = discord.Embed(
+        title="🎲 Dice Roll Results",
+        color=0x00ff88 if won else 0xe74c3c
+    )
+    
+    embed.add_field(name="🎯 Your Guess", value=f"```{guess.value}```", inline=True)
+    embed.add_field(name="🎲 Dice Result", value=f"```{result}```", inline=True)
+    
+    if won:
+        await add_diamonds(interaction.user.id, interaction.guild.id, 100)
+        embed.add_field(name="🎉 Result", value="```🎉 PERFECT GUESS! 🎉```", inline=False)
+        embed.add_field(name="💎 Reward", value="```+100 Diamonds```", inline=True)
+        
+        new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+        embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
+    else:
+        embed.add_field(name="😔 Result", value="```❌ Wrong Guess!```", inline=False)
+        embed.add_field(name="💎 Reward", value="```No reward```", inline=True)
+        embed.add_field(name="💡 Tip", value="```1 in 6 chance - keep trying!```", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="tos_coin", description="🧩 Special ToS Coin Flip - Pick Head or Tail to win 100 Diamonds!")
+@discord.app_commands.describe(choice="Choose Head or Tail")
+@discord.app_commands.choices(choice=[
+    discord.app_commands.Choice(name="Head", value="head"),
+    discord.app_commands.Choice(name="Tail", value="tail")
+])
+async def tos_coin(interaction: discord.Interaction, choice: discord.app_commands.Choice[str]):
+    result = random.choice(["head", "tail"])
+    won = choice.value == result
+    
+    embed = discord.Embed(
+        title="🧩 ToS Coin Flip Results",
+        description="*Based on Terms of Service Coin*",
+        color=0x00ff88 if won else 0xe74c3c
+    )
+    
+    embed.add_field(name="🎯 Your Pick", value=f"```{choice.name}```", inline=True)
+    embed.add_field(name="🪙 ToS Coin Result", value=f"```{result.title()}```", inline=True)
+    
+    if won:
+        await add_diamonds(interaction.user.id, interaction.guild.id, 100)
+        embed.add_field(name="🎉 Result", value="```🎉 WINNER! 🎉```", inline=False)
+        embed.add_field(name="💎 Reward", value="```+100 Diamonds```", inline=True)
+        
+        new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+        embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
+    else:
+        embed.add_field(name="😔 Result", value="```❌ Better Luck Next Time!```", inline=False)
+        embed.add_field(name="💎 Reward", value="```No reward```", inline=True)
+        embed.add_field(name="🎮 Note", value="```No Diamonds lost - play again!```", inline=True)
+    
+    embed.set_footer(text="🧩 Special ToS Edition | No risk, all reward!")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="test_dm", description="📩 Test if the bot can send you Direct Messages")
+async def test_dm(interaction: discord.Interaction):
+    try:
+        test_embed = discord.Embed(
+            title="✅ DM Test Successful!",
+            description="🎉 The bot can send you Direct Messages!\n\nYou'll receive notifications for:\n• Daily reward claims\n• Diamond transfers\n• Important updates",
+            color=0x00ff88
+        )
+        test_embed.set_footer(text="✨ PCRP Bot | DM Test")
+        
+        await interaction.user.send(embed=test_embed)
+        
+        response_embed = discord.Embed(
+            title="✅ DM Test Successful!",
+            description="Check your Direct Messages - the test was successful!",
+            color=0x00ff88
+        )
+        response_embed.add_field(
+            name="📬 DM Status",
+            value="```✅ Working perfectly!```",
+            inline=False
+        )
+        response_embed.add_field(
+            name="🔔 You'll receive DMs for:",
+            value="```• Daily reward claims\n• Diamond transfers\n• Important updates```",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=response_embed, ephemeral=True)
+        
+    except discord.Forbidden:
+        error_embed = discord.Embed(
+            title="❌ DM Test Failed",
+            description="I couldn't send you a Direct Message!",
+            color=0xe74c3c
+        )
+        error_embed.add_field(
+            name="🔧 How to fix:",
+            value="```1. Go to User Settings\n2. Privacy & Safety\n3. Enable 'Direct messages from server members'\n4. Try the test again```",
+            inline=False
+        )
+        error_embed.add_field(
+            name="⚠️ Impact:",
+            value="```You won't receive notifications for:\n• Daily rewards\n• Diamond transfers\n• Important updates```",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=error_embed, ephemeral=True)
+    
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="❌ DM Test Error",
+            description="An unexpected error occurred during the DM test.",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=error_embed, ephemeral=True)
+
 # Slash Commands
 @bot.tree.command(name="setup", description="Set up all bot features")
 async def setup_bot(interaction: discord.Interaction):
@@ -862,6 +1506,14 @@ async def setup_bot(interaction: discord.Interaction):
 📈 **Leveling** - Gain XP and level up
 🎂 **Birthdays** - Never miss celebrations
 📋 **Logging** - Track all server activity
+💎 **Diamond System** - Earn and spend Diamonds!
+
+**Diamond Commands:**
+`/claim_daily` - Get daily Diamond rewards
+`/get_points` - Check Diamond balance
+`/coinflip` `/dice` `/tos_coin` - Play mini games
+`/convert_points` - Convert to gift cards
+`/transfer_points` - Send Diamonds to friends
 
 **Slash Commands:**
 `/giveaway` - Create a giveaway
@@ -874,7 +1526,7 @@ async def setup_bot(interaction: discord.Interaction):
         )
         await general_channel.send(embed=welcome_embed)
 
-    await interaction.response.send_message("✅ Bot setup complete! All features are now active.", ephemeral=True)
+    await interaction.response.send_message("✅ Bot setup complete! All features including Diamond system are now active.", ephemeral=True)
 
 @bot.tree.command(name="ticket", description="Set up ticket system")
 @discord.app_commands.describe(channel="Channel to send the ticket panel")
@@ -941,6 +1593,7 @@ async def all_features_setup(interaction: discord.Interaction, channel: discord.
 │ 🎂 **Birthday** - Set your birthday │
 │ 📈 **Level** - Check your progress  │
 │ 🏆 **Leaderboard** - See top users  │
+│ 💎 **Diamonds** - Check your wealth │
 │                                     │
 │ Click any button below to get       │
 │ started with our features!          │
@@ -965,6 +1618,11 @@ async def all_features_setup(interaction: discord.Interaction, channel: discord.
     embed.add_field(
         name="🏆 Leaderboard",
         value="```Top players```",
+        inline=True
+    )
+    embed.add_field(
+        name="💎 Diamonds",
+        value="```Check balance```",
         inline=True
     )
 
@@ -1187,6 +1845,7 @@ async def view_logs(interaction: discord.Interaction, log_type: Optional[str] = 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has landed! 🚀')
+    print('💎 Diamond System Loaded!')
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -1336,6 +1995,7 @@ async def auto_setup_ticket_panel():
 │ 🎂 **Birthday** - Set your birthday │
 │ 📈 **Level** - Check your progress  │
 │ 🏆 **Leaderboard** - See top users  │
+│ 💎 **Diamonds** - Check your wealth │
 │                                     │
 │ Click any button below to get       │
 │ started with our features!          │
@@ -1360,6 +2020,11 @@ async def auto_setup_ticket_panel():
             embed3.add_field(
                 name="🏆 Leaderboard",
                 value="```Top players```",
+                inline=True
+            )
+            embed3.add_field(
+                name="💎 Diamonds",
+                value="```Check balance```",
                 inline=True
             )
 
