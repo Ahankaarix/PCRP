@@ -835,4 +835,5 @@ async def on_ready():
         print(f"Failed to sync commands: {e}")
 
 # Run the bot with your token
-bot.run("YOUR_DISCORD_BOT_TOKEN_HERE")
+import os
+bot.run(os.getenv("DISCORD_BOT_TOKEN"))
