@@ -125,15 +125,34 @@ class DiscordBot(commands.Bot):
 
 bot = DiscordBot()
 
-# Helper function to get channel IDs from database
+# AUTOMATIC CHANNEL CONFIGURATION - Set your channel IDs here
+DEFAULT_CHANNELS = {
+    "ticket": int(os.getenv("TICKET_CHANNEL_ID", "0")),
+    "general": int(os.getenv("GENERAL_CHANNEL_ID", "0")),
+    "minigames": int(os.getenv("MINIGAMES_CHANNEL_ID", "0")),
+    "convert": int(os.getenv("CONVERT_CHANNEL_ID", "0")),
+    "daily": int(os.getenv("DAILY_CHANNEL_ID", "0"))
+}
+
+# Helper function to get channel IDs (automatic from environment or database fallback)
 async def get_channel_config(guild_id: int) -> dict:
-    async with aiosqlite.connect(bot.db_path) as db:
-        async with db.execute(
-            "SELECT channel_type, channel_id FROM channel_config WHERE guild_id = ?",
-            (guild_id,)
-        ) as cursor:
-            results = await cursor.fetchall()
-            return {channel_type: channel_id for channel_type, channel_id in results}
+    # First try to use environment variables (automatic configuration)
+    config = {}
+    for channel_type, channel_id in DEFAULT_CHANNELS.items():
+        if channel_id > 0:  # Valid channel ID
+            config[channel_type] = channel_id
+    
+    # If no environment variables set, fall back to database
+    if not config:
+        async with aiosqlite.connect(bot.db_path) as db:
+            async with db.execute(
+                "SELECT channel_type, channel_id FROM channel_config WHERE guild_id = ?",
+                (guild_id,)
+            ) as cursor:
+                results = await cursor.fetchall()
+                config = {channel_type: channel_id for channel_type, channel_id in results}
+    
+    return config
 
 async def set_channel_config(guild_id: int, channel_type: str, channel_id: int):
     async with aiosqlite.connect(bot.db_path) as db:
