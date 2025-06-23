@@ -1,0 +1,83 @@
+All values are converted using 100 Diamonds = ₹1 with no decimals, rounding down wherever needed.
+
+💎 Currency Info
+100 Diamonds = ₹1
+
+No Decimals Allowed: All values are rounded down.
+
+💻 Bot Commands Overview
+🎁 Giftcard System
+/get_conversion
+View how many Diamonds are needed to convert into a gift card and what the value will be.
+
+/convert_points
+Convert your Diamonds into a gift card.
+
+/convert_giftcard
+Convert your gift card balance back into Diamonds.
+
+/convert_currency
+Simulate how much Diamonds are worth in different currencies. (Note: this does NOT convert your balance)
+
+⏳ Daily Rewards
+/claim_daily
+Claim your daily reward every 24 hours.
+
+Bonus: Claim within 36 hours to maintain your hidden streak. Streak rewards will be revealed soon!
+
+💸 Points & Transfers
+/get_points
+Check how many Diamonds a user currently has.
+
+/transfer_points
+Transfer Diamonds to another user.
+
+/get_multipliers
+View your current earning multipliers based on activities or bonuses.
+
+🎲 Mini Games
+🪙 Coin Toss
+Command: /coinflip
+
+How to Play: Choose either Heads or Tails.
+
+Reward: Win = +100 Diamonds
+
+⚠️ Lose = No reward
+
+🎯 Number Guessing
+Command: /dice
+
+How to Play: Guess the number the dice will land on (1 to 6).
+
+Reward: Win = +100 Diamonds
+
+❌ Incorrect = No reward
+(Instructions shown when using the command)
+
+📩 DM Checker
+Command: /test_dm
+Checks if the bot can send you Direct Messages (DMs).
+
+🔐 This is required for claiming rewards and receiving updates!
+
+🧩 Custom Game: ToS Coin Flip
+/tos_coin
+A special coin toss game based on Terms of Service Coin.
+
+Pick either Head or Tail.
+
+Win = +100 Diamonds
+
+No Diamonds lost on failure.
+
+✅ Channel Setup Suggestions
+You can organize your Discord server with the following dedicated channels:
+
+Channel Name	Purpose
+#💰・convert	Use all conversion-related commands (/get_conversion, /convert_points, etc.)
+#🎁・daily-rewards	Daily claim tracking & /claim_daily usage
+#🎲・minigames	All bot games like /coinflip, /dice, /tos_coin
+#💎・points-info	Use /get_points, /transfer_points, /get_multipliers
+#📬・dm-check	Run /test_dm to ensure bot DMs are working
+#🛍️・giftcard-store	Info about gift card values and redeemable items
