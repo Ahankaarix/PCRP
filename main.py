@@ -1070,8 +1070,81 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
+        
+        # Send startup messages to all configured servers
+        await send_startup_messages()
+        
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+async def send_startup_messages():
+    """Send startup messages with feature buttons to configured channels"""
+    for guild in bot.guilds:
+        try:
+            config = await get_channel_config(guild.id)
+            
+            if not config:
+                print(f"No configuration found for guild: {guild.name}")
+                continue
+            
+            # Create main features embed
+            main_embed = discord.Embed(
+                title="🤖 Bot Online & Ready!",
+                description=f"""
+**🎉 All Features Active in {guild.name}!**
+
+**🎫 Support System** - Create tickets for help
+**🎂 Birthday System** - Set birthdays for celebrations  
+**📈 Leveling System** - Gain XP and track progress
+**🏆 Leaderboard** - Compete with other members
+**💎 Mini Games** - Play games to earn Diamonds!
+
+**📍 Channel Setup:**
+🎫 Tickets: <#{config.get('ticket', 'Not Set')}>
+💬 General: <#{config.get('general', 'Not Set')}>
+🎮 Mini Games: <#{config.get('minigames', 'Not Set')}>
+📝 Transcripts: <#{config.get('transcript', 'Not Set')}>
+🎁 Daily: <#{config.get('daily', 'Not Set')}>
+                """,
+                color=0x00ff88,
+                timestamp=datetime.datetime.now()
+            )
+            main_embed.set_footer(text="✨ PCRP Bot Ready for Action!")
+            
+            # Create ticket embed
+            ticket_embed = discord.Embed(
+                title="🎫 Support Ticket System",
+                description="Need help? Click the button below to create a private support ticket!",
+                color=0x2ECC71
+            )
+            ticket_embed.set_footer(text="✨ PCRP Support Team")
+            
+            # Send to General Channel with full feature buttons
+            general_channel_id = config.get("general")
+            if general_channel_id:
+                general_channel = guild.get_channel(general_channel_id)
+                if general_channel:
+                    try:
+                        view = AllFeaturesView()
+                        await general_channel.send(embed=main_embed, view=view)
+                        print(f"✅ Sent startup message to General channel in {guild.name}")
+                    except Exception as e:
+                        print(f"❌ Failed to send to General channel in {guild.name}: {e}")
+            
+            # Send to Ticket Channel with ticket creation button
+            ticket_channel_id = config.get("ticket")
+            if ticket_channel_id:
+                ticket_channel = guild.get_channel(ticket_channel_id)
+                if ticket_channel:
+                    try:
+                        view = TicketView()
+                        await ticket_channel.send(embed=ticket_embed, view=view)
+                        print(f"✅ Sent ticket panel to Ticket channel in {guild.name}")
+                    except Exception as e:
+                        print(f"❌ Failed to send to Ticket channel in {guild.name}: {e}")
+                        
+        except Exception as e:
+            print(f"❌ Error sending startup messages to {guild.name}: {e}")
 
 # Error handling
 @bot.event
