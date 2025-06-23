@@ -1115,17 +1115,29 @@ async def claim_daily(interaction: discord.Interaction):
                 last_daily = datetime.datetime.fromisoformat(last_daily_str)
                 time_since_last = now - last_daily
                 
-                # Check if already claimed today
+                # Check if already claimed today (strict 24-hour check)
                 if time_since_last.total_seconds() < 86400:  # 24 hours
                     time_left = 86400 - time_since_last.total_seconds()
                     hours_left = int(time_left // 3600)
                     minutes_left = int((time_left % 3600) // 60)
+                    seconds_left = int(time_left % 60)
                     
                     embed = discord.Embed(
-                        title="⏰ Daily Already Claimed",
-                        description=f"Come back in {hours_left}h {minutes_left}m to claim again!",
+                        title="⏰ Daily Already Claimed Today",
+                        description=f"You can claim your next daily reward in:",
                         color=0xe74c3c
                     )
+                    embed.add_field(
+                        name="⏳ Time Remaining",
+                        value=f"```{hours_left}h {minutes_left}m {seconds_left}s```",
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="💡 Tip",
+                        value="```Daily claims are limited to once every 24 hours```",
+                        inline=False
+                    )
+                    embed.set_footer(text="⏰ Come back when the timer reaches zero!")
                     await interaction.response.send_message(embed=embed, ephemeral=True)
                     return
                 
@@ -1386,13 +1398,32 @@ async def dice(interaction: discord.Interaction, guess: discord.app_commands.Cho
     
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="tos_coin", description="🧩 Special ToS Coin Flip - Pick Head or Tail to win 100 Diamonds!")
+@bot.tree.command(name="tos_coin", description="🧩 Special ToS Coin Flip - Bet 100 Diamonds to win 100 more!")
 @discord.app_commands.describe(choice="Choose Head or Tail")
 @discord.app_commands.choices(choice=[
     discord.app_commands.Choice(name="Head", value="head"),
     discord.app_commands.Choice(name="Tail", value="tail")
 ])
 async def tos_coin(interaction: discord.Interaction, choice: discord.app_commands.Choice[str]):
+    # Check if user has minimum bet amount
+    user_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+    bet_amount = 100
+    
+    if user_balance < bet_amount:
+        embed = discord.Embed(
+            title="❌ Insufficient Diamonds",
+            description=f"You need at least {bet_amount:,} Diamonds to play ToS Coin Flip!",
+            color=0xe74c3c
+        )
+        embed.add_field(name="💎 Your Balance", value=f"```{user_balance:,}```", inline=True)
+        embed.add_field(name="💎 Required", value=f"```{bet_amount:,}```", inline=True)
+        embed.add_field(name="💡 Tip", value="```Use /claim_daily to earn more!```", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Deduct bet amount first
+    await remove_diamonds(interaction.user.id, interaction.guild.id, bet_amount)
+    
     result = random.choice(["head", "tail"])
     won = choice.value == result
     
@@ -1404,20 +1435,27 @@ async def tos_coin(interaction: discord.Interaction, choice: discord.app_command
     
     embed.add_field(name="🎯 Your Pick", value=f"```{choice.name}```", inline=True)
     embed.add_field(name="🪙 ToS Coin Result", value=f"```{result.title()}```", inline=True)
+    embed.add_field(name="💰 Bet Amount", value=f"```{bet_amount:,} Diamonds```", inline=True)
     
     if won:
-        await add_diamonds(interaction.user.id, interaction.guild.id, 100)
+        # Give back bet + winnings (total 200 diamonds)
+        winnings = bet_amount + 100  # 100 bet back + 100 win
+        await add_diamonds(interaction.user.id, interaction.guild.id, winnings)
         embed.add_field(name="🎉 Result", value="```🎉 WINNER! 🎉```", inline=False)
-        embed.add_field(name="💎 Reward", value="```+100 Diamonds```", inline=True)
+        embed.add_field(name="💎 You Won", value=f"```+{winnings:,} Diamonds```", inline=True)
+        embed.add_field(name="📊 Net Gain", value="```+100 Diamonds```", inline=True)
         
         new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
         embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
     else:
-        embed.add_field(name="😔 Result", value="```❌ Better Luck Next Time!```", inline=False)
-        embed.add_field(name="💎 Reward", value="```No reward```", inline=True)
-        embed.add_field(name="🎮 Note", value="```No Diamonds lost - play again!```", inline=True)
+        embed.add_field(name="😔 Result", value="```❌ You Lost!```", inline=False)
+        embed.add_field(name="💎 Lost", value=f"```-{bet_amount:,} Diamonds```", inline=True)
+        embed.add_field(name="📊 Net Loss", value=f"```-{bet_amount:,} Diamonds```", inline=True)
+        
+        new_balance = await get_user_diamonds(interaction.user.id, interaction.guild.id)
+        embed.add_field(name="💰 New Balance", value=f"```{new_balance:,}```", inline=True)
     
-    embed.set_footer(text="🧩 Special ToS Edition | No risk, all reward!")
+    embed.set_footer(text="🧩 Special ToS Edition | High Risk, High Reward!")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="test_dm", description="📩 Test if the bot can send you Direct Messages")
