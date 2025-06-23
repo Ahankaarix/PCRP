@@ -17,26 +17,6 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# Channel IDs will be loaded from database dynamically
-
-# Helper function to get channel IDs from database
-async def get_channel_config(guild_id: int) -> dict:
-    async with aiosqlite.connect(bot.db_path) as db:
-        async with db.execute(
-            "SELECT channel_type, channel_id FROM channel_config WHERE guild_id = ?",
-            (guild_id,)
-        ) as cursor:
-            results = await cursor.fetchall()
-            return {channel_type: channel_id for channel_type, channel_id in results}
-
-async def set_channel_config(guild_id: int, channel_type: str, channel_id: int):
-    async with aiosqlite.connect(bot.db_path) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO channel_config (guild_id, channel_type, channel_id) VALUES (?, ?, ?)",
-            (guild_id, channel_type, channel_id)
-        )
-        await db.commit()
-
 class DiscordBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents)
@@ -145,6 +125,24 @@ class DiscordBot(commands.Bot):
 
 bot = DiscordBot()
 
+# Helper function to get channel IDs from database
+async def get_channel_config(guild_id: int) -> dict:
+    async with aiosqlite.connect(bot.db_path) as db:
+        async with db.execute(
+            "SELECT channel_type, channel_id FROM channel_config WHERE guild_id = ?",
+            (guild_id,)
+        ) as cursor:
+            results = await cursor.fetchall()
+            return {channel_type: channel_id for channel_type, channel_id in results}
+
+async def set_channel_config(guild_id: int, channel_type: str, channel_id: int):
+    async with aiosqlite.connect(bot.db_path) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO channel_config (guild_id, channel_type, channel_id) VALUES (?, ?, ?)",
+            (guild_id, channel_type, channel_id)
+        )
+        await db.commit()
+
 # Birthday checker task
 @tasks.loop(hours=24)
 async def birthday_check():
@@ -216,35 +214,6 @@ async def remove_diamonds(user_id: int, guild_id: int, amount: int) -> bool:
             await db.commit()
         return True
     return False
-
-# Channel restriction decorator for mini games - FIXED VERSION
-def channel_restriction(*channel_types: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        async def wrapper(interaction: discord.Interaction, *args: Any, **kwargs: Any) -> Any:
-            config = await get_channel_config(interaction.guild.id)
-            allowed_channel_ids = [config.get(channel_type) for channel_type in channel_types if config.get(channel_type)]
-            
-            if not allowed_channel_ids:
-                embed = discord.Embed(
-                    title="❌ Channels Not Configured!",
-                    description="Please use `/configure` to set up bot channels first!",
-                    color=0xe74c3c
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            if interaction.channel.id not in allowed_channel_ids:
-                allowed_channels = [f"<#{channel_id}>" for channel_id in allowed_channel_ids]
-                embed = discord.Embed(
-                    title="❌ Wrong Channel!",
-                    description=f"This command can only be used in:\n{', '.join(allowed_channels)}",
-                    color=0xe74c3c
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            return await func(interaction, *args, **kwargs)
-        return wrapper
-    return decorator
 
 # Button View Classes
 class Button3DView(discord.ui.View):
@@ -526,8 +495,6 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
             # Save to database
             for channel_type, channel_id in validated_channels.items():
                 await set_channel_config(guild.id, channel_type, channel_id)
-
-            # Channels are now stored in database and loaded dynamically
 
             success_embed = discord.Embed(
                 title="✅ Channels Configured Successfully!",
@@ -1018,6 +985,20 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
+# Error handling
+@bot.event
+async def on_error(event, *args, **kwargs):
+    print(f'An error occurred in {event}: {args}, {kwargs}')
+
 # Run the bot with your token
-import os
-bot.run(os.getenv("DISCORD_BOT_TOKEN"))
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        print("❌ ERROR: DISCORD_BOT_TOKEN not found!")
+        print("Please add your Discord bot token to Replit Secrets:")
+        print("1. Go to Secrets tab in left sidebar")
+        print("2. Add key: DISCORD_BOT_TOKEN")
+        print("3. Add value: your_actual_bot_token_here")
+        exit(1)
+    
+    bot.run(token)
