@@ -551,12 +551,6 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
         required=True
     )
 
-    convert_channel = discord.ui.TextInput(
-        label="💱 Convert Channel ID",
-        placeholder="Channel ID for currency conversion",
-        required=True
-    )
-
     async def on_submit(self, interaction: discord.Interaction):
         try:
             guild = interaction.guild
@@ -567,8 +561,7 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
                 ("general", self.general_channel.value),
                 ("minigames", self.minigames_channel.value),
                 ("transcript", self.transcript_channel.value),
-                ("daily", self.daily_channel.value),
-                ("convert", self.convert_channel.value)
+                ("daily", self.daily_channel.value)
             ]
 
             validated_channels = {}
@@ -584,13 +577,16 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
                     await interaction.response.send_message(f"❌ Invalid {channel_type} channel ID format!", ephemeral=True)
                     return
 
+            # Auto-set convert channel to same as general channel
+            validated_channels["convert"] = validated_channels["general"]
+
             # Save to database
             for channel_type, channel_id in validated_channels.items():
                 await set_channel_config(guild.id, channel_type, channel_id)
 
             success_embed = discord.Embed(
                 title="✅ Channels Configured Successfully!",
-                description="All bot channels have been set up.",
+                description="All bot channels have been set up.\n*Convert channel automatically set to General channel.*",
                 color=0x00ff88
             )
             
