@@ -17,13 +17,31 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# Channel IDs - Configure these for your server
-TICKET_CHANNEL_ID = 1386365038411124916
-GENERAL_CHANNEL_ID = 1386365076268908564
-CONVERT_CHANNEL_ID = 1386365076268908565  # Add your convert channel ID
-DAILY_CHANNEL_ID = 1386365076268908566    # Add your daily channel ID
-MINIGAMES_CHANNEL_ID = 1386365076268908567 # Add your minigames channel ID
-POINTS_CHANNEL_ID = 1386365076268908568   # Add your points channel ID
+# Channel IDs - Will be configured via /configure command
+TICKET_CHANNEL_ID = None
+GENERAL_CHANNEL_ID = None
+CONVERT_CHANNEL_ID = None
+DAILY_CHANNEL_ID = None
+MINIGAMES_CHANNEL_ID = None
+POINTS_CHANNEL_ID = None
+
+# Helper function to get channel IDs from database
+async def get_channel_config(guild_id: int) -> dict:
+    async with aiosqlite.connect(bot.db_path) as db:
+        async with db.execute(
+            "SELECT channel_type, channel_id FROM channel_config WHERE guild_id = ?",
+            (guild_id,)
+        ) as cursor:
+            results = await cursor.fetchall()
+            return {channel_type: channel_id for channel_type, channel_id in results}
+
+async def set_channel_config(guild_id: int, channel_type: str, channel_id: int):
+    async with aiosqlite.connect(bot.db_path) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO channel_config (guild_id, channel_type, channel_id) VALUES (?, ?, ?)",
+            (guild_id, channel_type, channel_id)
+        )
+        await db.commit()
 
 class DiscordBot(commands.Bot):
     def __init__(self):
@@ -119,6 +137,16 @@ class DiscordBot(commands.Bot):
                 )
             ''')
 
+            # Channel configuration table
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS channel_config (
+                    guild_id INTEGER,
+                    channel_type TEXT,
+                    channel_id INTEGER,
+                    PRIMARY KEY (guild_id, channel_type)
+                )
+            ''')
+
             await db.commit()
 
 bot = DiscordBot()
@@ -194,9 +222,21 @@ async def remove_diamonds(user_id: int, guild_id: int, amount: int) -> bool:
     return False
 
 # Channel restriction decorator for mini games - FIXED VERSION
-def channel_restriction(*allowed_channel_ids: int) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def channel_restriction(*channel_types: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         async def wrapper(interaction: discord.Interaction, *args: Any, **kwargs: Any) -> Any:
+            config = await get_channel_config(interaction.guild.id)
+            allowed_channel_ids = [config.get(channel_type) for channel_type in channel_types if config.get(channel_type)]
+            
+            if not allowed_channel_ids:
+                embed = discord.Embed(
+                    title="❌ Channels Not Configured!",
+                    description="Please use `/configure` to set up bot channels first!",
+                    color=0xe74c3c
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
             if interaction.channel.id not in allowed_channel_ids:
                 allowed_channels = [f"<#{channel_id}>" for channel_id in allowed_channel_ids]
                 embed = discord.Embed(
@@ -422,6 +462,100 @@ class BirthdayModal(discord.ui.Modal, title="🎂 Set Your Birthday"):
         except Exception as e:
             await interaction.response.send_message(f"❌ Error setting birthday: {str(e)}", ephemeral=True)
 
+class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"):
+    def __init__(self):
+        super().__init__()
+
+    ticket_channel = discord.ui.TextInput(
+        label="🎫 Ticket Channel ID",
+        placeholder="Channel ID for ticket system",
+        required=True
+    )
+
+    general_channel = discord.ui.TextInput(
+        label="💬 General Channel ID",
+        placeholder="Channel ID for general announcements",
+        required=True
+    )
+
+    minigames_channel = discord.ui.TextInput(
+        label="🎮 Minigames Channel ID",
+        placeholder="Channel ID for Diamond mini games",
+        required=True
+    )
+
+    convert_channel = discord.ui.TextInput(
+        label="💱 Convert Channel ID",
+        placeholder="Channel ID for currency conversion",
+        required=False
+    )
+
+    daily_channel = discord.ui.TextInput(
+        label="🎁 Daily Rewards Channel ID",
+        placeholder="Channel ID for daily claims",
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            guild = interaction.guild
+            
+            # Validate channel IDs
+            channels_to_validate = [
+                ("ticket", self.ticket_channel.value),
+                ("general", self.general_channel.value),
+                ("minigames", self.minigames_channel.value)
+            ]
+            
+            if self.convert_channel.value:
+                channels_to_validate.append(("convert", self.convert_channel.value))
+            if self.daily_channel.value:
+                channels_to_validate.append(("daily", self.daily_channel.value))
+
+            validated_channels = {}
+            for channel_type, channel_id_str in channels_to_validate:
+                try:
+                    channel_id = int(channel_id_str)
+                    channel = guild.get_channel(channel_id)
+                    if not channel:
+                        await interaction.response.send_message(f"❌ {channel_type.title()} channel not found! Make sure the bot has access to it.", ephemeral=True)
+                        return
+                    validated_channels[channel_type] = channel_id
+                except ValueError:
+                    await interaction.response.send_message(f"❌ Invalid {channel_type} channel ID format!", ephemeral=True)
+                    return
+
+            # Save to database
+            for channel_type, channel_id in validated_channels.items():
+                await set_channel_config(guild.id, channel_type, channel_id)
+
+            # Update global variables for immediate use
+            global TICKET_CHANNEL_ID, GENERAL_CHANNEL_ID, CONVERT_CHANNEL_ID, DAILY_CHANNEL_ID, MINIGAMES_CHANNEL_ID, POINTS_CHANNEL_ID
+            TICKET_CHANNEL_ID = validated_channels.get("ticket")
+            GENERAL_CHANNEL_ID = validated_channels.get("general")
+            MINIGAMES_CHANNEL_ID = validated_channels.get("minigames")
+            CONVERT_CHANNEL_ID = validated_channels.get("convert")
+            DAILY_CHANNEL_ID = validated_channels.get("daily")
+
+            success_embed = discord.Embed(
+                title="✅ Channels Configured Successfully!",
+                description="All bot channels have been set up.",
+                color=0x00ff88
+            )
+            
+            for channel_type, channel_id in validated_channels.items():
+                channel = guild.get_channel(channel_id)
+                success_embed.add_field(
+                    name=f"{channel_type.title()} Channel",
+                    value=f"{channel.mention}",
+                    inline=True
+                )
+
+            await interaction.response.send_message(embed=success_embed, ephemeral=True)
+
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error configuring channels: {str(e)}", ephemeral=True)
+
 # MINI GAMES WITH DIAMOND SYSTEM (RESTRICTED TO MINIGAMES CHANNEL)
 @bot.tree.command(name="coinflip", description="🪙 Play coin toss - Guess Heads or Tails to win 100 Diamonds!")
 @discord.app_commands.describe(choice="Choose Heads or Tails")
@@ -431,10 +565,22 @@ class BirthdayModal(discord.ui.Modal, title="🎂 Set Your Birthday"):
 ])
 async def coinflip(interaction: discord.Interaction, choice: discord.app_commands.Choice[str]):
     # Check channel restriction
-    if interaction.channel.id != MINIGAMES_CHANNEL_ID:
+    config = await get_channel_config(interaction.guild.id)
+    minigames_channel_id = config.get("minigames")
+    
+    if not minigames_channel_id:
+        embed = discord.Embed(
+            title="❌ Bot Not Configured!",
+            description="Please use `/configure` to set up bot channels first!",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if interaction.channel.id != minigames_channel_id:
         embed = discord.Embed(
             title="❌ Wrong Channel!",
-            description=f"This command can only be used in <#{MINIGAMES_CHANNEL_ID}>",
+            description=f"This command can only be used in <#{minigames_channel_id}>",
             color=0xe74c3c
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -477,10 +623,22 @@ async def coinflip(interaction: discord.Interaction, choice: discord.app_command
 ])
 async def dice(interaction: discord.Interaction, guess: discord.app_commands.Choice[int]):
     # Check channel restriction
-    if interaction.channel.id != MINIGAMES_CHANNEL_ID:
+    config = await get_channel_config(interaction.guild.id)
+    minigames_channel_id = config.get("minigames")
+    
+    if not minigames_channel_id:
+        embed = discord.Embed(
+            title="❌ Bot Not Configured!",
+            description="Please use `/configure` to set up bot channels first!",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if interaction.channel.id != minigames_channel_id:
         embed = discord.Embed(
             title="❌ Wrong Channel!",
-            description=f"This command can only be used in <#{MINIGAMES_CHANNEL_ID}>",
+            description=f"This command can only be used in <#{minigames_channel_id}>",
             color=0xe74c3c
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -522,10 +680,22 @@ async def dice(interaction: discord.Interaction, guess: discord.app_commands.Cho
 ])
 async def tos_coin(interaction: discord.Interaction, choice: discord.app_commands.Choice[str], bet: int = 100):
     # Check channel restriction
-    if interaction.channel.id != MINIGAMES_CHANNEL_ID:
+    config = await get_channel_config(interaction.guild.id)
+    minigames_channel_id = config.get("minigames")
+    
+    if not minigames_channel_id:
+        embed = discord.Embed(
+            title="❌ Bot Not Configured!",
+            description="Please use `/configure` to set up bot channels first!",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if interaction.channel.id != minigames_channel_id:
         embed = discord.Embed(
             title="❌ Wrong Channel!",
-            description=f"This command can only be used in <#{MINIGAMES_CHANNEL_ID}>",
+            description=f"This command can only be used in <#{minigames_channel_id}>",
             color=0xe74c3c
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -763,27 +933,48 @@ async def giveaway(interaction: discord.Interaction, prize: str, duration: int, 
         await db.commit()
 
 # SETUP COMMANDS
-@bot.tree.command(name="setup", description="Set up all bot features")
+@bot.tree.command(name="configure", description="Configure bot channels for your server")
+async def configure_bot(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need Administrator permissions to configure the bot!", ephemeral=True)
+        return
+    
+    await interaction.response.send_modal(ChannelConfigModal())
+
+@bot.tree.command(name="setup", description="Set up all bot features (run /configure first)")
 async def setup_bot(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need Administrator permissions to set up the bot!", ephemeral=True)
+        return
+
     guild = interaction.guild
+    config = await get_channel_config(guild.id)
+
+    if not config:
+        await interaction.response.send_message("❌ Please run `/configure` first to set up bot channels!", ephemeral=True)
+        return
 
     # Set up ticket system
-    ticket_channel = guild.get_channel(TICKET_CHANNEL_ID)
-    if ticket_channel:
-        embed = discord.Embed(
-            title="🎫 Support Tickets",
-            description="Click the button below to create a support ticket!",
-            color=0x3498db
-        )
-        view = TicketView()
-        await ticket_channel.send(embed=embed, view=view)
+    ticket_channel_id = config.get("ticket")
+    if ticket_channel_id:
+        ticket_channel = guild.get_channel(ticket_channel_id)
+        if ticket_channel:
+            embed = discord.Embed(
+                title="🎫 Support Tickets",
+                description="Click the button below to create a support ticket!",
+                color=0x3498db
+            )
+            view = TicketView()
+            await ticket_channel.send(embed=embed, view=view)
 
     # Set up welcome message in general
-    general_channel = guild.get_channel(GENERAL_CHANNEL_ID)
-    if general_channel:
-        welcome_embed = discord.Embed(
-            title="🎉 Bot Features Active!",
-            description="""
+    general_channel_id = config.get("general")
+    if general_channel_id:
+        general_channel = guild.get_channel(general_channel_id)
+        if general_channel:
+            welcome_embed = discord.Embed(
+                title="🎉 Bot Features Active!",
+                description=f"""
 **Available Features:**
 🎫 **Tickets** - Create support tickets
 🎉 **Giveaways** - Host exciting giveaways  
@@ -791,7 +982,7 @@ async def setup_bot(interaction: discord.Interaction):
 🎂 **Birthdays** - Never miss celebrations
 💎 **Mini Games** - Play games to earn Diamonds!
 
-**Mini Game Commands (Use in minigames channel):**
+**Mini Game Commands (Use in <#{config.get('minigames', 'minigames-channel')}>):**
 `/coinflip` - Free coin toss game
 `/dice` - Free dice guessing game  
 `/tos_coin` - High stakes betting game
@@ -802,11 +993,12 @@ async def setup_bot(interaction: discord.Interaction):
 `/level` - Check your level
 `/leaderboard` - View top users
 `/birthday` - Set your birthday
-            """,
-            color=0x00ff88
-        )
-        view = AllFeaturesView()
-        await general_channel.send(embed=welcome_embed, view=view)
+`/configure` - Reconfigure bot channels
+                """,
+                color=0x00ff88
+            )
+            view = AllFeaturesView()
+            await general_channel.send(embed=welcome_embed, view=view)
 
     await interaction.response.send_message("✅ Bot setup complete! All features are now active.", ephemeral=True)
 
