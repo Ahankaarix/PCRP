@@ -1,3 +1,4 @@
+
 import discord
 from discord.ext import commands, tasks
 import aiosqlite
@@ -8,7 +9,7 @@ import datetime
 from PIL import Image, ImageDraw, ImageFont
 import io
 import os
-from typing import Optional
+from typing import Optional, Callable, Any
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -120,6 +121,8 @@ class DiscordBot(commands.Bot):
 
             await db.commit()
 
+bot = DiscordBot()
+
 # Birthday checker task
 @tasks.loop(hours=24)
 async def birthday_check():
@@ -158,8 +161,6 @@ async def birthday_check():
             if channel:
                 await channel.send(embed=embed)
 
-bot = DiscordBot()
-
 # Helper functions for Diamond system (mini games only)
 async def get_user_diamonds(user_id: int, guild_id: int) -> int:
     async with aiosqlite.connect(bot.db_path) as db:
@@ -192,10 +193,10 @@ async def remove_diamonds(user_id: int, guild_id: int, amount: int) -> bool:
         return True
     return False
 
-# Channel restriction decorator for mini games
-def channel_restriction(*allowed_channel_ids):
-    def decorator(func):
-        async def wrapper(interaction: discord.Interaction, *args, **kwargs):
+# Channel restriction decorator for mini games - FIXED VERSION
+def channel_restriction(*allowed_channel_ids: int) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        async def wrapper(interaction: discord.Interaction, *args: Any, **kwargs: Any) -> Any:
             if interaction.channel.id not in allowed_channel_ids:
                 allowed_channels = [f"<#{channel_id}>" for channel_id in allowed_channel_ids]
                 embed = discord.Embed(
@@ -428,8 +429,17 @@ class BirthdayModal(discord.ui.Modal, title="🎂 Set Your Birthday"):
     discord.app_commands.Choice(name="Heads", value="heads"),
     discord.app_commands.Choice(name="Tails", value="tails")
 ])
-@channel_restriction(MINIGAMES_CHANNEL_ID)
 async def coinflip(interaction: discord.Interaction, choice: discord.app_commands.Choice[str]):
+    # Check channel restriction
+    if interaction.channel.id != MINIGAMES_CHANNEL_ID:
+        embed = discord.Embed(
+            title="❌ Wrong Channel!",
+            description=f"This command can only be used in <#{MINIGAMES_CHANNEL_ID}>",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
     result = random.choice(["heads", "tails"])
     won = choice.value == result
 
@@ -465,8 +475,17 @@ async def coinflip(interaction: discord.Interaction, choice: discord.app_command
     discord.app_commands.Choice(name="5", value=5),
     discord.app_commands.Choice(name="6", value=6)
 ])
-@channel_restriction(MINIGAMES_CHANNEL_ID)
 async def dice(interaction: discord.Interaction, guess: discord.app_commands.Choice[int]):
+    # Check channel restriction
+    if interaction.channel.id != MINIGAMES_CHANNEL_ID:
+        embed = discord.Embed(
+            title="❌ Wrong Channel!",
+            description=f"This command can only be used in <#{MINIGAMES_CHANNEL_ID}>",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
     result = random.randint(1, 6)
     won = guess.value == result
 
@@ -501,8 +520,17 @@ async def dice(interaction: discord.Interaction, guess: discord.app_commands.Cho
     discord.app_commands.Choice(name="Head", value="head"),
     discord.app_commands.Choice(name="Tail", value="tail")
 ])
-@channel_restriction(MINIGAMES_CHANNEL_ID)
 async def tos_coin(interaction: discord.Interaction, choice: discord.app_commands.Choice[str], bet: int = 100):
+    # Check channel restriction
+    if interaction.channel.id != MINIGAMES_CHANNEL_ID:
+        embed = discord.Embed(
+            title="❌ Wrong Channel!",
+            description=f"This command can only be used in <#{MINIGAMES_CHANNEL_ID}>",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
     if bet < 100:
         await interaction.response.send_message("❌ Minimum bet is 100 Diamonds!", ephemeral=True)
         return
