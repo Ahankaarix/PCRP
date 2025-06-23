@@ -17,13 +17,7 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# Channel IDs - Will be configured via /configure command
-TICKET_CHANNEL_ID = None
-GENERAL_CHANNEL_ID = None
-CONVERT_CHANNEL_ID = None
-DAILY_CHANNEL_ID = None
-MINIGAMES_CHANNEL_ID = None
-POINTS_CHANNEL_ID = None
+# Channel IDs will be loaded from database dynamically
 
 # Helper function to get channel IDs from database
 async def get_channel_config(guild_id: int) -> dict:
@@ -180,7 +174,9 @@ async def birthday_check():
             )
 
             # Send to designated general channel
-            channel = guild.get_channel(GENERAL_CHANNEL_ID)
+            config = await get_channel_config(guild_id)
+            general_channel_id = config.get("general")
+            channel = guild.get_channel(general_channel_id) if general_channel_id else None
             if not channel:
                 channel = discord.utils.get(guild.text_channels, name="general")
                 if not channel:
@@ -284,7 +280,9 @@ class TicketView(Button3DView):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
 
-        ticket_channel = guild.get_channel(TICKET_CHANNEL_ID)
+        config = await get_channel_config(guild.id)
+        ticket_channel_id = config.get("ticket")
+        ticket_channel = guild.get_channel(ticket_channel_id) if ticket_channel_id else None
         category = ticket_channel.category if ticket_channel else None
 
         channel = await guild.create_text_channel(
@@ -529,13 +527,7 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
             for channel_type, channel_id in validated_channels.items():
                 await set_channel_config(guild.id, channel_type, channel_id)
 
-            # Update global variables for immediate use
-            global TICKET_CHANNEL_ID, GENERAL_CHANNEL_ID, CONVERT_CHANNEL_ID, DAILY_CHANNEL_ID, MINIGAMES_CHANNEL_ID, POINTS_CHANNEL_ID
-            TICKET_CHANNEL_ID = validated_channels.get("ticket")
-            GENERAL_CHANNEL_ID = validated_channels.get("general")
-            MINIGAMES_CHANNEL_ID = validated_channels.get("minigames")
-            CONVERT_CHANNEL_ID = validated_channels.get("convert")
-            DAILY_CHANNEL_ID = validated_channels.get("daily")
+            # Channels are now stored in database and loaded dynamically
 
             success_embed = discord.Embed(
                 title="✅ Channels Configured Successfully!",
