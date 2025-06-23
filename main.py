@@ -545,10 +545,10 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
         required=True
     )
 
-    convert_channel = discord.ui.TextInput(
-        label="💱 Convert Channel ID (Optional)",
-        placeholder="Channel ID for currency conversion",
-        required=False
+    daily_channel = discord.ui.TextInput(
+        label="🎁 Daily Channel ID",
+        placeholder="Channel ID for daily rewards",
+        required=True
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -560,11 +560,9 @@ class ChannelConfigModal(discord.ui.Modal, title="⚙️ Configure Bot Channels"
                 ("ticket", self.ticket_channel.value),
                 ("general", self.general_channel.value),
                 ("minigames", self.minigames_channel.value),
-                ("transcript", self.transcript_channel.value)
+                ("transcript", self.transcript_channel.value),
+                ("daily", self.daily_channel.value)
             ]
-            
-            if self.convert_channel.value:
-                channels_to_validate.append(("convert", self.convert_channel.value))
 
             validated_channels = {}
             for channel_type, channel_id_str in channels_to_validate:
